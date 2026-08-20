@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luma App</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+</head>
+
+<body>
+
+    <div class="interface">
+
+        <div class="notifications-box">
+
+            <div class="tabs">
+                <button id="tabNotifications" class="tab-btn active">Notifications</button>
+                <button id="tabStats" class="tab-btn">Statistics</button>
+            </div>
+
+            <button id="clearNotifications" class="clear-btn">Clear history</button>
+
+            <div class="notifications-list" id="notificationsList"></div>
+
+            <div class="stats-panel" id="statsPanel" style="display: none;">
+
+            <button id="clearStats" class="clear-btn">Clear statistics</button>
+
+            <div class="stats-summary">
+                <div class="stat-box">
+                    <div class="stat-number" id="statToday">0</div>
+                    <div class="stat-label">Today</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number" id="statTotal">0</div>
+                    <div class="stat-label">Total</div>
+                </div>
+            </div>
+
+                <div class="insight-summary" id="insightSummary"></div>
+
+                <div class="stats-section">
+                    <div class="stats-section-title">By time of day</div>
+                    <div class="stats-chart" id="hourlyChart"></div>
+                </div>
+
+                <div class="stats-section">
+                    <div class="stats-section-title">Weekly Trend</div>
+                    <div class="stats-chart" id="trendChart"></div>
+                </div>
+
+                <div class="stats-section">
+                    <div class="stats-section-title">After how long</div>
+                    <div class="stats-chart" id="durationChart"></div>
+                </div>
+
+            </div>
+
+        </div>
+
+        <div class="camera-box">
+
+            <div class="camera-header">
+                <h3>Webcamera image</h3>
+                <select id="cameraSelect" class="camera-select"></select>
+                <span id="statusIndicator" class="status-indicator">Waiting for input...</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="meshToggle" checked>
+                    <span class="toggle-slider"></span>
+                    <span class="toggle-label">Face mesh</span>
+                </label>
+            </div>
+
+            <div class="camera-frame">
+
+                <video autoplay id="webcamera"></video>
+                
+                <canvas id="faceCanvas"></canvas>
+
+                <button onclick="toggleCamera()" class="camera-activation-button">
+                    <img src="assets/cameraActivation.svg">
+                </button>
+
+            </div>
+
+        </div>
+
+    </div>
+    
+</body>
+
+<script src="app.js"></script>
+
+</html>
