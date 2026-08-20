@@ -23,7 +23,7 @@ function createWindow() {
 }
 
 ipcMain.on('show-notification', (event, { title, body }) => {
-    console.log('IPC получен в main:', title, body);
+    console.log('IPC was received in main:', title, body);
     if (!Notification.isSupported()) {
         console.log('Notification.isSupported() = false');
         return;
@@ -41,7 +41,7 @@ ipcMain.handle('get-drowsiness-advice', async () => {
             'Wechsle kurz die Umgebung (Fenster öffnen, Licht an)'
         ];
         const randomAngle = tips[Math.floor(Math.random() * tips.length)];
-        console.log('Выбранная категория:', randomAngle); // добавить
+        console.log('Selected category:', randomAngle);
 
         const result = await ai.models.generateContent({
             model: 'gemini-3.5-flash',
@@ -51,7 +51,7 @@ ipcMain.handle('get-drowsiness-advice', async () => {
             }
         });
 
-        console.log('Ответ от Gemini:', result.text); // добавить
+        console.log('Answer from Gemini:', result.text);
 
         return result.text.trim();
     } catch (error) {
@@ -60,7 +60,7 @@ ipcMain.handle('get-drowsiness-advice', async () => {
     }
 });
 app.whenReady().then(() => {
-    app.setAppUserModelId(app.getName()); // <-- здесь, внутри whenReady
+    app.setAppUserModelId(app.getName());
 
     session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
         callback(permission === 'media');
