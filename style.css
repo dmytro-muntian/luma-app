@@ -267,6 +267,11 @@ h3 {
     color: #fb923c;
 }
 
+.status-indicator.looking-down {
+    background: #1a2a3d;
+    color: #60a5fa;
+}
+
 .status-indicator.active {
     background: #1a3d3a;
     color: #4fd1c5;
@@ -499,4 +504,37 @@ h3 {
     color: #4fd1c5;
     border-color: #1a3d3a;
     opacity: 0.7;
+}
+
+.now-playing-badge {
+    position: absolute;
+    top: 1.25rem;
+    left: 1.25rem;
+    z-index: 100;
+
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+
+    background: rgba(26, 31, 46, 0.85);
+    backdrop-filter: blur(6px);
+    border: 1px solid #2a3142;
+    border-radius: 999px;
+    padding: 0.4rem 0.8rem 0.4rem 0.7rem;
+
+    max-width: calc(100% - 2.5rem);
+}
+
+.now-playing-icon {
+    color: #4fd1c5;
+    font-size: 0.85rem;
+    flex-shrink: 0;
+}
+
+.now-playing-text {
+    font-size: 0.75rem;
+    color: #d1d5db;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }

@@ -1,6 +1,9 @@
 const { app, BrowserWindow, Notification, ipcMain, session } = require('electron');
 const path = require('path');
 const { GoogleGenAI } = require('@google/genai');
+const robot = require('robotjs');
+const { SMTCMonitor } = require('@coooookies/windows-smtc-monitor');
+const { Worker } = require('worker_threads');
 require('dotenv').config();
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -22,6 +25,20 @@ function createWindow() {
     mainWindow.loadFile('index.html');
 }
 
+let smtcWorker;
+
+function startSmtcWorker() {
+    smtcWorker = new Worker(path.join(__dirname, 'smtc-worker.js'));
+
+    smtcWorker.on('message', (data) => {
+        mainWindow?.webContents.send('now-playing-changed', data);
+    });
+
+    smtcWorker.on('error', (err) => {
+        console.error('SMTC worker error:', err);
+    });
+}
+
 ipcMain.on('show-notification', (event, { title, body }) => {
     console.log('IPC was received in main:', title, body);
     if (!Notification.isSupported()) {
@@ -29,6 +46,25 @@ ipcMain.on('show-notification', (event, { title, body }) => {
         return;
     }
     new Notification({ title, body }).show();
+});
+
+ipcMain.on('media-control', (event, direction) => {
+    console.log('Media control IPC received:', direction);
+ 
+    try {
+        if (direction === 'next') {
+            robot.keyTap('audio_next');
+        } else if (direction === 'previous') {
+            robot.keyTap('audio_prev');
+        } else {
+            console.log('Unknown media direction:', direction);
+        }
+    } catch (error) {
+        // на некоторых системах/сборках robotjs может не поддерживать
+        // конкретно media-клавиши - тогда стоит перейти на nut-js или
+        // платформенный fallback (osascript на mac, playerctl на linux)
+        console.error('robotjs media key failed:', error.message || error);
+    }
 });
 
 ipcMain.handle('get-drowsiness-advice', async () => {
@@ -66,9 +102,12 @@ app.whenReady().then(() => {
         callback(permission === 'media');
     });
     createWindow();
+
+    startSmtcWorker();
 });
 
 app.on('window-all-closed', () => {
+    smtcWorker?.terminate();
     if (process.platform !== 'darwin') app.quit();
 });
 

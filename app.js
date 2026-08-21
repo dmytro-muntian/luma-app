@@ -44,7 +44,7 @@ async function startCamera(deviceId) {
 
         currentStream = stream;
         video.srcObject = stream;
-        
+
         cameraSelect.addEventListener('change', () => {
             if (currentStream) {
                 startCamera(cameraSelect.value);
@@ -59,6 +59,7 @@ async function startCamera(deviceId) {
 
         async function frameLoop() {
             await faceMesh.send({ image: video });
+            await hands.send({ image: video });
             animationFrameId = setTimeout(frameLoop, 33);
         }
 
@@ -104,6 +105,9 @@ function stopCamera() {
     calibrationSamples = [];
     calibrationStartTime = null;
 
+    // reset gesture-control state too, otherwise a stale swipe could carry over into the next session
+    resetGestureState();
+
     updateCameraButtonUI();
     updateStatusIndicator('calibrating');
 
@@ -135,6 +139,9 @@ function updateStatusIndicator(state) {
             break;
         case 'tilted':
             statusIndicator.textContent = 'Pitch';
+            break;
+        case 'looking-down':
+            statusIndicator.textContent = 'Looking down';
             break;
         case 'active':
             statusIndicator.textContent = 'Tracking';
@@ -271,6 +278,33 @@ const LEFT_IRIS_CENTER = 468;
 const LEFT_EYE_TOP = 159;
 const LEFT_EYE_BOTTOM = 145;
 
+// gazeVertical is roughly 0 (iris near the top lid, looking up) to 1
+// (iris near the bottom lid, looking down). Values above this threshold
+// mean the eyes are pointed down at something in your lap/hands, not
+// closing - tune by watching the "Gaze vertical:" console log while you
+// deliberately look down at your phone vs. blink normally.
+// снижаем оба порога — им не нужно ловить экстремальные случаи по отдельности,
+// работать они будут вместе
+const PITCH_TOLERANCE_SOFT = 0.20;   // было 0.40 для единственной проверки
+const GAZE_DOWN_THRESHOLD_SOFT = 0.55; // было 0.65 для единственной проверки
+
+function isLookingAway(pitchRatio, gazeVertical) {
+    if (baselinePitchRatio === null) return false;
+
+    const pitchDeviation = Math.abs((pitchRatio - baselinePitchRatio) / baselinePitchRatio);
+
+    // ни наклон, ни взгляд по отдельности могут не дотянуть до "сильного" порога,
+    // но если они складываются - вероятность того, что человек реально смотрит
+    // в телефон, а не засыпает, гораздо выше
+    const pitchScore = pitchDeviation / PITCH_TOLERANCE_SOFT;   // >= 1 значит "явный наклон"
+    const gazeScore = gazeVertical / GAZE_DOWN_THRESHOLD_SOFT;  // >= 1 значит "явный взгляд вниз"
+
+    console.log('pitchScore:', pitchScore.toFixed(2), 'gazeScore:', gazeScore.toFixed(2));
+
+    // срабатывает, если хотя бы один явно превышен, ИЛИ оба умеренно повышены одновременно
+    return pitchScore > 1 || gazeScore > 1 || (pitchScore > 0.5 && gazeScore > 0.5);
+}
+
 function calculateGazeVertical(landmarks) {
     const irisY = landmarks[LEFT_IRIS_CENTER].y;
     const eyeTopY = landmarks[LEFT_EYE_TOP].y;
@@ -372,6 +406,217 @@ let eyesClosedStartTime = null;
 const EAR_THRESHOLD = 0.25;
 const DROWSINESS_DURATION = 2000;
 
+// ---------------------------------------------------------------------
+// Hand-gesture media control
+//
+// Two switchable modes, tracked via a separate MediaPipe Hands model
+// running on the same video frames as FaceMesh:
+//
+//  - 'swipe':   palm crosses a chunk of the frame width within a short
+//               window -> right = next, left = previous
+//  - 'fingers': 1 extended finger = next, 2 extended fingers = previous
+//               (thumb excluded - its extension is mostly horizontal,
+//               not vertical, so the same up/down check doesn't work for it)
+// ---------------------------------------------------------------------
+
+let gestureMode = 'swipe'; // 'swipe' | 'fingers'
+
+const gestureModeToggle = document.getElementById('gestureModeToggle');
+const gestureModeLabel = document.getElementById('gestureModeLabel');
+
+function resetGestureState() {
+    handPositionHistory = [];
+    lastSwipeTriggerTime = 0;
+
+    currentGesture = null;
+    gestureStartTime = null;
+    gestureTriggered = false;
+    lastGestureTriggerTime = 0;
+}
+
+if (gestureModeToggle) {
+    gestureModeToggle.addEventListener('change', () => {
+        gestureMode = gestureModeToggle.checked ? 'fingers' : 'swipe';
+        gestureModeLabel.textContent = gestureModeToggle.checked ? 'Пальцы' : 'Свайп';
+        // переключение режима на полпути жеста может оставить "залипшее"
+        // состояние от предыдущего режима - сбрасываем оба набора состояний
+        resetGestureState();
+    });
+}
+
+// --- swipe mode ---
+
+const SWIPE_WINDOW_MS = 600;       // swipe must complete within this time
+const SWIPE_MIN_DISTANCE = 0.28;   // fraction of frame width the palm must travel
+const SWIPE_COOLDOWN_MS = 1000;    // ignore further swipes right after a trigger
+const PALM_LANDMARK_IDXS = [0, 5, 9, 13, 17]; // wrist + base of each finger
+
+let handPositionHistory = []; // { x, t }
+let lastSwipeTriggerTime = 0;
+
+function getPalmCenterX(landmarks) {
+    const sum = PALM_LANDMARK_IDXS.reduce((acc, i) => acc + landmarks[i].x, 0);
+    return sum / PALM_LANDMARK_IDXS.length;
+}
+
+function detectSwipe(landmarks) {
+
+    const now = Date.now();
+    const x = getPalmCenterX(landmarks);
+
+    handPositionHistory.push({ x, t: now });
+    handPositionHistory = handPositionHistory.filter(p => now - p.t <= SWIPE_WINDOW_MS);
+
+    if (now - lastSwipeTriggerTime < SWIPE_COOLDOWN_MS) {
+        return;
+    }
+
+    if (handPositionHistory.length < 2) {
+        return;
+    }
+
+    const oldest = handPositionHistory[0];
+    const delta = x - oldest.x;
+
+    if (Math.abs(delta) >= SWIPE_MIN_DISTANCE) {
+        lastSwipeTriggerTime = now;
+        handPositionHistory = [];
+
+        // video coordinate space is mirrored relative to what you see on
+        // screen, so the mapping below is flipped to match
+        if (delta > 0) {
+            triggerMediaControl('previous');
+        } else {
+            triggerMediaControl('next');
+        }
+    }
+
+}
+
+// --- fingers mode ---
+
+const INDEX_TIP = 8, INDEX_PIP = 6;
+const MIDDLE_TIP = 12, MIDDLE_PIP = 10;
+const RING_TIP = 16, RING_PIP = 14;
+const PINKY_TIP = 20, PINKY_PIP = 18;
+
+const GESTURE_HOLD_MS = 250;       // gesture must be held this long before it counts
+const GESTURE_COOLDOWN_MS = 1000;  // ignore further gestures right after a trigger
+
+let currentGesture = null;     // 'one' | 'two' | null
+let gestureStartTime = null;
+let gestureTriggered = false;
+let lastGestureTriggerTime = 0;
+
+function isFingerExtended(landmarks, tipIdx, pipIdx) {
+    return landmarks[tipIdx].y < landmarks[pipIdx].y;
+}
+
+function getFingerGesture(landmarks) {
+
+    const indexUp = isFingerExtended(landmarks, INDEX_TIP, INDEX_PIP);
+    const middleUp = isFingerExtended(landmarks, MIDDLE_TIP, MIDDLE_PIP);
+    const ringUp = isFingerExtended(landmarks, RING_TIP, RING_PIP);
+    const pinkyUp = isFingerExtended(landmarks, PINKY_TIP, PINKY_PIP);
+
+    if (indexUp && !middleUp && !ringUp && !pinkyUp) return 'one';
+    if (indexUp && middleUp && !ringUp && !pinkyUp) return 'two';
+    return null;
+
+}
+
+function detectFingerGesture(handsLandmarksList) {
+
+    // вторая рука обычно просто лежит в кадре без чёткого жеста -
+    // берём первую руку, которая реально показывает "1" или "2"
+    let gesture = null;
+    for (const landmarks of handsLandmarksList) {
+        const g = getFingerGesture(landmarks);
+        if (g) {
+            gesture = g;
+            break;
+        }
+    }
+
+    const now = Date.now();
+
+    if (gesture !== currentGesture) {
+        currentGesture = gesture;
+        gestureStartTime = now;
+        gestureTriggered = false;
+        return;
+    }
+
+    if (gesture === null) return;
+    if (gestureTriggered) return;
+    if (now - lastGestureTriggerTime < GESTURE_COOLDOWN_MS) return;
+
+    if (now - gestureStartTime >= GESTURE_HOLD_MS) {
+        gestureTriggered = true;
+        lastGestureTriggerTime = now;
+
+        if (gesture === 'one') {
+            triggerMediaControl('next');
+        } else {
+            triggerMediaControl('previous');
+        }
+    }
+
+}
+
+function triggerMediaControl(direction) {
+
+    console.log('Media control triggered:', direction);
+
+    if (window.electronAPI && typeof window.electronAPI.mediaControl === 'function') {
+        window.electronAPI.mediaControl(direction);
+    } else {
+        console.log('window.electronAPI.mediaControl is not defined - see preload/main setup needed for real media control');
+    }
+
+    flashGestureFeedback(direction);
+
+}
+
+// small visual confirmation so the user gets feedback that a gesture was recognized
+function flashGestureFeedback(direction) {
+    if (!statusIndicator) return;
+    const previousText = statusIndicator.textContent;
+    const previousClass = statusIndicator.className;
+
+    statusIndicator.textContent = direction === 'next' ? '⏭ Next' : '⏮ Prev';
+
+    setTimeout(() => {
+        statusIndicator.textContent = previousText;
+        statusIndicator.className = previousClass;
+    }, 700);
+}
+
+const hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 0,
+    minDetectionConfidence: 0.6,
+    minTrackingConfidence: 0.5
+});
+
+hands.onResults((results) => {
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        if (gestureMode === 'swipe') {
+            detectSwipe(results.multiHandLandmarks[0]);
+        } else {
+            detectFingerGesture(results.multiHandLandmarks);
+        }
+    } else if (gestureMode === 'fingers') {
+        currentGesture = null;
+        gestureStartTime = null;
+        gestureTriggered = false;
+    }
+});
+
 const faceMesh = new FaceMesh ({
 
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
@@ -424,17 +669,15 @@ faceMesh.onResults((results) => {
         }
 
         const gazeVertical = calculateGazeVertical(landmarks);
-        console.log('Gaze vertical:', gazeVertical.toFixed(2));
 
-        if (isHeadTiltedDown(pitchRatio)) {
-        eyesClosedStartTime = null;
-        drowsinessNotified = false;
-        updateStatusIndicator('tilted');
-        return;
-}
+        if (isLookingAway(pitchRatio, gazeVertical)) {
+            eyesClosedStartTime = null;
+            drowsinessNotified = false;
+            updateStatusIndicator(gazeVertical > GAZE_DOWN_THRESHOLD_SOFT ? 'looking-down' : 'tilted');
+            return;
+        }
 
         updateStatusIndicator('active');
-
         checkDrowsiness(leftEAR, rightEAR);
 
     }
@@ -656,5 +899,18 @@ document.getElementById('clearStats').addEventListener('click', () => {
     }
 });
 
+const nowPlayingBadge = document.getElementById('nowPlayingBadge');
+const nowPlayingText = document.getElementById('nowPlayingText');
 
+if (window.electronAPI && typeof window.electronAPI.onNowPlayingChanged === 'function') {
+    window.electronAPI.onNowPlayingChanged((data) => {
+        if (!data || !data.title) {
+            nowPlayingBadge.style.display = 'none';
+            return;
+        }
 
+        const label = data.artist ? `${data.artist} — ${data.title}` : data.title;
+        nowPlayingText.textContent = label;
+        nowPlayingBadge.style.display = 'flex';
+    });
+}

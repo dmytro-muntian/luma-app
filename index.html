@@ -7,6 +7,7 @@
     <title>Luma App</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 </head>
 
@@ -62,11 +63,23 @@
         </div>
 
         <div class="camera-box">
-
+            
+            <div class="now-playing-badge" id="nowPlayingBadge" style="display: none;">
+                <span class="now-playing-icon">♪</span>
+                <span class="now-playing-text" id="nowPlayingText"></span>
+            </div>
+            
             <div class="camera-header">
                 <h3>Webcamera image</h3>
                 <select id="cameraSelect" class="camera-select"></select>
                 <span id="statusIndicator" class="status-indicator">Waiting for input...</span>
+                
+                <label class="toggle-switch">
+                    <input type="checkbox" id="gestureModeToggle">
+                    <span class="toggle-slider"></span>
+                    <span class="toggle-label" id="gestureModeLabel">Свайп</span>
+                </label>
+                
                 <label class="toggle-switch">
                     <input type="checkbox" id="meshToggle" checked>
                     <span class="toggle-slider"></span>
