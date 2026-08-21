@@ -1,11 +1,12 @@
 # Luma
 
-Luma is a desktop app that watches for signs of drowsiness while you work at your computer and nudges you to take a break — with a live webcam feed, face-mesh tracking, and AI-generated tips powered by Gemini.
+Luma is a desktop app that watches for signs of drowsiness while you work at your computer and nudges you to take a break — with a live webcam feed, face-mesh tracking, hand-gesture media controls, and AI-generated tips powered by Gemini.
 
 ## Features
 
 - **Real-time drowsiness detection** using [MediaPipe FaceMesh](https://google.github.io/mediapipe/solutions/face_mesh) and Eye Aspect Ratio (EAR) calculation
 - **Head-tilt calibration** to avoid false positives while looking down at the keyboard
+- **Gaze-down detection** to avoid false positives when glancing at your phone or lap — tracks iris position within the eyelids, combined with head-tilt deviation, so a lowered EAR from looking down isn't mistaken for eyes closing
 - **AI-generated advice** on each alert, powered by Google's Gemini API
 - **Desktop notifications** with sound alerts
 - **Notification history** with the ability to mark false positives ("Not sleep")
@@ -17,13 +18,21 @@ Luma is a desktop app that watches for signs of drowsiness while you work at you
   - False positives excluded from all stats
 - **Camera selection** for multi-camera setups, with the ability to toggle the camera on/off
 - **Face mesh overlay** toggle
+- **Hand-gesture media control**, switchable between two modes:
+  - **Swipe** — a palm crossing the frame left/right skips to the previous/next track
+  - **Fingers** — hold up 1 finger for next track, 2 fingers for previous track
+- **Now-playing badge** showing the currently playing track (title/artist), read from the Windows system media session (SMTC) — updates automatically as tracks change
 
 ## Tech stack
 
 - [Electron](https://www.electronjs.org/)
-- [MediaPipe FaceMesh](https://google.github.io/mediapipe/solutions/face_mesh)
+- [MediaPipe FaceMesh](https://google.github.io/mediapipe/solutions/face_mesh) and [MediaPipe Hands](https://google.github.io/mediapipe/solutions/hands) for gesture recognition
 - [Google Gemini API](https://ai.google.dev/) (`@google/genai`)
+- [robotjs](https://github.com/octalmage/robotjs) for simulating media key presses
+- [@coooookies/windows-smtc-monitor](https://github.com/LeagueTavern/node-windows-smtc-monitor) for reading now-playing track info from Windows (runs in a `worker_threads` worker to avoid blocking the main process)
 - Vanilla JS / HTML / CSS (no frontend framework)
+
+> **Platform note:** media key simulation and the now-playing badge rely on Windows-specific APIs (SMTC), and are only supported on Windows 10 1809+ / Windows 11.
 
 ## Getting started
 
@@ -31,6 +40,7 @@ Luma is a desktop app that watches for signs of drowsiness while you work at you
 
 - [Node.js](https://nodejs.org/) (LTS recommended)
 - A [Gemini API key](https://aistudio.google.com/)
+- Windows 10 (1809+) or Windows 11, for the media-control and now-playing features
 
 ### Setup
 
@@ -39,17 +49,14 @@ Luma is a desktop app that watches for signs of drowsiness while you work at you
    git clone https://github.com/dmytro-muntian/luma-app.git
    cd luma-app
    ```
-
 2. Install dependencies:
    ```bash
    npm install
    ```
-
 3. Create a `.env` file in the project root:
    ```
    GEMINI_API_KEY=your_api_key_here
    ```
-
 4. Start the app:
    ```bash
    npm start
@@ -71,10 +78,11 @@ The packaged app will be available in the `dist/` folder.
 
 ```
 luma-app/
-├── main.js          # Electron main process, IPC handlers, Gemini API calls
-├── preload.js        # Context bridge between renderer and main
+├── main.js            # Electron main process, IPC handlers, Gemini API calls, SMTC worker orchestration
+├── preload.js         # Context bridge between renderer and main
+├── smtc-worker.js     # Worker thread polling Windows SMTC for now-playing track info
 ├── index.html         # App layout
-├── app.js            # Camera handling, face tracking, drowsiness logic, stats
+├── app.js             # Camera handling, face/hand tracking, drowsiness logic, gesture control, stats
 ├── style.css          # UI styling
 ├── assets/            # Icons and sound files
 └── .env               # Local API key (not committed)
