@@ -18,15 +18,16 @@ Luma is a desktop app that watches for signs of drowsiness while you work at you
   - False positives excluded from all stats
 - **Camera selection** for multi-camera setups, with the ability to toggle the camera on/off
 - **Face mesh overlay** toggle
-- **Hand-gesture media control**, switchable between two modes:
-  - **Swipe** — a palm crossing the frame left/right skips to the previous/next track
-  - **Palm** — hold up an open palm; which hand (left/right, as seen on screen) decides the direction — right hand skips forward, left hand goes back. A hand resting near the face (e.g. propping up your chin) is automatically ignored, so it isn't mistaken for a gesture
+- **Pinch-based media control** using only two gestures:
+   - **Thumb + index finger** — next track
+   - **Thumb + middle finger** — previous track
+   - The pinch must be held for about 400 ms to be confirmed; hands supporting the face are ignored to reduce accidental triggers
 - **Now-playing badge** showing the currently playing track (title/artist), read from the Windows system media session (SMTC) — updates automatically as tracks change
 
 ## Tech stack
 
 - [Electron](https://www.electronjs.org/)
-- [MediaPipe FaceMesh](https://google.github.io/mediapipe/solutions/face_mesh) and [MediaPipe Hands](https://google.github.io/mediapipe/solutions/hands) for gesture recognition (including left/right hand classification for palm gestures)
+- [MediaPipe FaceMesh](https://google.github.io/mediapipe/solutions/face_mesh) and [MediaPipe Hands](https://google.github.io/mediapipe/solutions/hands) for face and pinch-gesture recognition
 - [Google Gemini API](https://ai.google.dev/) (`@google/genai`)
 - [robotjs](https://github.com/octalmage/robotjs) for simulating media key presses
 - [@coooookies/windows-smtc-monitor](https://github.com/LeagueTavern/node-windows-smtc-monitor) for reading now-playing track info from Windows (runs in a `worker_threads` worker to avoid blocking the main process)

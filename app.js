@@ -58,9 +58,14 @@ async function startCamera(deviceId) {
         video.play();
 
         async function frameLoop() {
-            await faceMesh.send({ image: video });
-            await hands.send({ image: video });
-            animationFrameId = setTimeout(frameLoop, 33);
+            try {
+                await faceMesh.send({ image: video });
+                await hands.send({ image: video });
+            } catch (error) {
+                console.error('Frame loop error:', error);
+            } finally {
+                animationFrameId = setTimeout(frameLoop, 33);
+            }
         }
 
         frameLoop();
@@ -104,6 +109,7 @@ function stopCamera() {
     baselinePitchRatio = null;
     calibrationSamples = [];
     calibrationStartTime = null;
+    latestFaceLandmarks = null;
 
     // reset gesture-control state too, otherwise a stale swipe could carry over into the next session
     resetGestureState();
@@ -412,150 +418,130 @@ const DROWSINESS_DURATION = 2000;
 // Two switchable modes, tracked via a separate MediaPipe Hands model
 // running on the same video frames as FaceMesh:
 //
-//  - 'swipe':   palm crosses a chunk of the frame width within a short
-//               window -> right = next, left = previous
-//  - 'fingers': 1 extended finger = next, 2 extended fingers = previous
-//               (thumb excluded - its extension is mostly horizontal,
-//               not vertical, so the same up/down check doesn't work for it)
+//  - 'swipe': palm crosses a chunk of the frame width within a short
+//             window -> right = next, left = previous
+//  - 'pinch': thumb + index finger = next track, thumb + middle finger =
+//             previous track
 // ---------------------------------------------------------------------
 
-let gestureMode = 'swipe'; // 'swipe' | 'fingers'
+const GESTURE_HOLD_MS = 400;       // gesture must be held this long before it counts
+const GESTURE_COOLDOWN_MS = 1000;  // ignore further gestures right after a trigger
+const PINCH_LOST_GRACE_MS = 220;   // tolerate short tracking gaps while holding a pinch
 
-const gestureModeToggle = document.getElementById('gestureModeToggle');
-const gestureModeLabel = document.getElementById('gestureModeLabel');
+let currentGesture = null;
+let gestureStartTime = null;
+let gestureTriggered = false;
+let lastGestureTriggerTime = 0;
+let lastPinchCandidateTime = 0;
 
 function resetGestureState() {
-    handPositionHistory = [];
-    lastSwipeTriggerTime = 0;
-
     currentGesture = null;
     gestureStartTime = null;
     gestureTriggered = false;
     lastGestureTriggerTime = 0;
+    lastPinchCandidateTime = 0;
 }
-
-if (gestureModeToggle) {
-    gestureModeToggle.addEventListener('change', () => {
-    gestureMode = gestureModeToggle.checked ? 'palm' : 'swipe';
-    gestureModeLabel.textContent = gestureModeToggle.checked ? 'Palm' : 'Swipe';
-    resetGestureState();
-    });
-}
-
-// --- swipe mode ---
-
-const SWIPE_WINDOW_MS = 600;       // swipe must complete within this time
-const SWIPE_MIN_DISTANCE = 0.28;   // fraction of frame width the palm must travel
-const SWIPE_COOLDOWN_MS = 1000;    // ignore further swipes right after a trigger
-const PALM_LANDMARK_IDXS = [0, 5, 9, 13, 17]; // wrist + base of each finger
-
-let handPositionHistory = []; // { x, t }
-let lastSwipeTriggerTime = 0;
-
-function getPalmCenterX(landmarks) {
-    const sum = PALM_LANDMARK_IDXS.reduce((acc, i) => acc + landmarks[i].x, 0);
-    return sum / PALM_LANDMARK_IDXS.length;
-}
-
-function detectSwipe(landmarks) {
-
-    const now = Date.now();
-    const x = getPalmCenterX(landmarks);
-
-    handPositionHistory.push({ x, t: now });
-    handPositionHistory = handPositionHistory.filter(p => now - p.t <= SWIPE_WINDOW_MS);
-
-    if (now - lastSwipeTriggerTime < SWIPE_COOLDOWN_MS) {
-        return;
-    }
-
-    if (handPositionHistory.length < 2) {
-        return;
-    }
-
-    const oldest = handPositionHistory[0];
-    const delta = x - oldest.x;
-
-    if (Math.abs(delta) >= SWIPE_MIN_DISTANCE) {
-        lastSwipeTriggerTime = now;
-        handPositionHistory = [];
-
-        // video coordinate space is mirrored relative to what you see on
-        // screen, so the mapping below is flipped to match
-        if (delta > 0) {
-            triggerMediaControl('previous');
-        } else {
-            triggerMediaControl('next');
-        }
-    }
-
-}
-
-// --- palm mode ---
 //
-// An open palm (all 5 fingers extended, thumb included) counts as a
-// gesture; which hand shows it (left/right, as seen on screen) decides
-// the direction. This is far less likely to be triggered accidentally by
-// everyday poses (resting a hand on your face, holding a mug, etc.) than
-// counting extended fingers.
+// A hand resting near the face (propping up the chin, scratching a cheek,
+// etc.) can accidentally look like a gesture. We keep the latest FaceMesh
+// landmarks around and reject any hand landmark that falls inside a
+// padded bounding box around the face.
 
-const THUMB_TIP = 4, THUMB_MCP = 2, INDEX_MCP = 5;
+let latestFaceLandmarks = null;
 
-const HANDEDNESS_CONFIDENCE_MIN = 0.8;
+const FACE_LEFT_IDX = 234;
+const FACE_RIGHT_IDX = 454;
 
-// MediaPipe's Left/Right classification assumes a mirrored (selfie-style)
-// input image. If the raw stream we send to the model is NOT mirrored
-// (only the on-screen <video> is mirrored via CSS for the user to see),
-// the labels come back swapped relative to what's visually on screen -
-// flip this if testing shows "right hand on screen" triggers "previous"
-// instead of "next" (see console log below to check).
-const HANDEDNESS_MIRRORED = true;
+function getFaceBoundingBox(faceLandmarks) {
+    const top = faceLandmarks[FOREHEAD_IDX].y;
+    const bottom = faceLandmarks[CHIN_IDX].y;
+    const left = Math.min(faceLandmarks[FACE_LEFT_IDX].x, faceLandmarks[FACE_RIGHT_IDX].x);
+    const right = Math.max(faceLandmarks[FACE_LEFT_IDX].x, faceLandmarks[FACE_RIGHT_IDX].x);
+
+    const width = right - left;
+    const height = bottom - top;
+
+    // margin so a finger near the cheek/jawline also counts as "on the
+    // face", not just strictly inside the face oval
+    const marginX = width * 0.35;
+    const marginY = height * 0.35;
+
+    return {
+        top: top - marginY,
+        bottom: bottom + marginY,
+        left: left - marginX,
+        right: right + marginX
+    };
+}
+
+function isPointInBox(x, y, box) {
+    return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+}
+
+function isHandSupportingFace(handLandmarks) {
+    if (!latestFaceLandmarks) return false;
+
+    const box = getFaceBoundingBox(latestFaceLandmarks);
+    const pointsToCheck = [0, 4, 8, 12, 16, 20];
+    const pointsNearFace = pointsToCheck.filter(idx =>
+        isPointInBox(handLandmarks[idx].x, handLandmarks[idx].y, box)
+    ).length;
+
+    return pointsNearFace >= 2;
+}
+
+// --- pinch mode ---
+//
+// Distances are normalized by the palm size so the thresholds remain stable
+// when the hand moves closer to or farther from the camera.
+
+const THUMB_TIP = 4;
+const INDEX_TIP = 8;
+const MIDDLE_TIP = 12;
+const MIDDLE_MCP = 9;
+const PINCH_THRESHOLD = 0.45;
+
+const HANDEDNESS_CONFIDENCE_MIN = 0.6;
 
 function distance(a, b) {
     return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function isThumbExtended(landmarks) {
-    const tipDist = distance(landmarks[THUMB_TIP], landmarks[INDEX_MCP]);
-    const mcpDist = distance(landmarks[THUMB_MCP], landmarks[INDEX_MCP]);
-    return tipDist > mcpDist * 1.3;
+function getPinchRatio(landmarks, fingerTip) {
+    const palmSize = distance(landmarks[0], landmarks[MIDDLE_MCP]);
+    if (palmSize === 0) return Infinity;
+
+    return distance(landmarks[THUMB_TIP], landmarks[fingerTip]) / palmSize;
 }
 
-function isPalmOpen(landmarks) {
-    return (
-        isThumbExtended(landmarks) &&
-        isFingerExtended(landmarks, INDEX_TIP, INDEX_PIP) &&
-        isFingerExtended(landmarks, MIDDLE_TIP, MIDDLE_PIP) &&
-        isFingerExtended(landmarks, RING_TIP, RING_PIP) &&
-        isFingerExtended(landmarks, PINKY_TIP, PINKY_PIP)
-    );
-}
-
-function detectPalmGesture(handsData) {
-
-    const openHands = handsData.filter(h =>
-        h.score >= HANDEDNESS_CONFIDENCE_MIN &&
-        isPalmOpen(h.landmarks) &&
-        !isHandNearFace(h.landmarks)
-    );
-
-    let gesture = null;
-
-    // ровно одна открытая ладонь - однозначная команда. Ноль или обе
-    // сразу - неоднозначно, игнорируем (например, потягивание двумя руками)
-    if (openHands.length === 1) {
-        let side = openHands[0].label; // 'Left' | 'Right' от MediaPipe
-
-        if (HANDEDNESS_MIRRORED) {
-            side = side === 'Left' ? 'Right' : 'Left';
-        }
-
-        console.log('Palm detected - raw label:', openHands[0].label, '-> resolved side:', side);
-
-        gesture = side === 'Right' ? 'right' : 'left';
-    }
+function detectPinchGesture(handsData) {
 
     const now = Date.now();
+    const pinchCandidates = handsData
+        .filter(h => h.score >= HANDEDNESS_CONFIDENCE_MIN && !isHandSupportingFace(h.landmarks))
+        .flatMap(h => {
+            const indexRatio = getPinchRatio(h.landmarks, INDEX_TIP);
+            const middleRatio = getPinchRatio(h.landmarks, MIDDLE_TIP);
+            const candidates = [];
+
+            if (indexRatio <= PINCH_THRESHOLD) candidates.push('next');
+            if (middleRatio <= PINCH_THRESHOLD) candidates.push('previous');
+
+            return candidates.length === 1 ? candidates : [];
+        });
+
+    const gesture = pinchCandidates.length === 1 ? pinchCandidates[0] : null;
+
+    if (gesture !== null) {
+        lastPinchCandidateTime = now;
+    } else if (currentGesture !== null && now - lastPinchCandidateTime <= PINCH_LOST_GRACE_MS) {
+        return confirmGesture(currentGesture, now);
+    }
+
+    confirmGesture(gesture, now);
+}
+
+function confirmGesture(gesture, now) {
 
     if (gesture !== currentGesture) {
         currentGesture = gesture;
@@ -572,8 +558,7 @@ function detectPalmGesture(handsData) {
         gestureTriggered = true;
         lastGestureTriggerTime = now;
 
-        // право на экране = следующий трек, лево = предыдущий
-        if (gesture === 'right') {
+        if (gesture === 'next') {
             triggerMediaControl('next');
         } else {
             triggerMediaControl('previous');
@@ -623,25 +608,14 @@ hands.setOptions({
 
 hands.onResults((results) => {
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const handsData = results.multiHandLandmarks.map((landmarks, i) => ({
+            landmarks,
+            score: results.multiHandedness[i]?.score ?? 0
+        }));
+        detectPinchGesture(handsData);
 
-        if (gestureMode === 'swipe') {
-            const activeHands = results.multiHandLandmarks.filter(lm => !isHandNearFace(lm));
-            if (activeHands.length > 0) {
-                detectSwipe(activeHands[0]);
-            }
-        } else {
-            const handsData = results.multiHandLandmarks.map((landmarks, i) => ({
-                landmarks,
-                label: results.multiHandedness[i]?.label,
-                score: results.multiHandedness[i]?.score ?? 0
-            }));
-            detectPalmGesture(handsData);
-        }
-
-    } else if (gestureMode === 'palm') {
-        currentGesture = null;
-        gestureStartTime = null;
-        gestureTriggered = false;
+    } else {
+        detectPinchGesture([]);
     }
 });
 
@@ -665,6 +639,7 @@ faceMesh.onResults((results) => {
     if (results.multiFaceLandmarks.length > 0) {
 
         const landmarks = results.multiFaceLandmarks[0];
+        latestFaceLandmarks = landmarks;
 
         drawLandmarks(landmarks);
 
