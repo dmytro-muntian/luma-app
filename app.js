@@ -437,7 +437,7 @@ function resetGestureState() {
 if (gestureModeToggle) {
     gestureModeToggle.addEventListener('change', () => {
         gestureMode = gestureModeToggle.checked ? 'fingers' : 'swipe';
-        gestureModeLabel.textContent = gestureModeToggle.checked ? 'Пальцы' : 'Свайп';
+        gestureModeLabel.textContent = gestureModeToggle.checked ? 'Fingers' : 'Swipe';
         // переключение режима на полпути жеста может оставить "залипшее"
         // состояние от предыдущего режима - сбрасываем оба набора состояний
         resetGestureState();
