@@ -20,13 +20,13 @@ Luma is a desktop app that watches for signs of drowsiness while you work at you
 - **Face mesh overlay** toggle
 - **Hand-gesture media control**, switchable between two modes:
   - **Swipe** — a palm crossing the frame left/right skips to the previous/next track
-  - **Fingers** — hold up 1 finger for next track, 2 fingers for previous track
+  - **Palm** — hold up an open palm; which hand (left/right, as seen on screen) decides the direction — right hand skips forward, left hand goes back. A hand resting near the face (e.g. propping up your chin) is automatically ignored, so it isn't mistaken for a gesture
 - **Now-playing badge** showing the currently playing track (title/artist), read from the Windows system media session (SMTC) — updates automatically as tracks change
 
 ## Tech stack
 
 - [Electron](https://www.electronjs.org/)
-- [MediaPipe FaceMesh](https://google.github.io/mediapipe/solutions/face_mesh) and [MediaPipe Hands](https://google.github.io/mediapipe/solutions/hands) for gesture recognition
+- [MediaPipe FaceMesh](https://google.github.io/mediapipe/solutions/face_mesh) and [MediaPipe Hands](https://google.github.io/mediapipe/solutions/hands) for gesture recognition (including left/right hand classification for palm gestures)
 - [Google Gemini API](https://ai.google.dev/) (`@google/genai`)
 - [robotjs](https://github.com/octalmage/robotjs) for simulating media key presses
 - [@coooookies/windows-smtc-monitor](https://github.com/LeagueTavern/node-windows-smtc-monitor) for reading now-playing track info from Windows (runs in a `worker_threads` worker to avoid blocking the main process)

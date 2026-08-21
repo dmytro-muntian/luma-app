@@ -436,11 +436,9 @@ function resetGestureState() {
 
 if (gestureModeToggle) {
     gestureModeToggle.addEventListener('change', () => {
-        gestureMode = gestureModeToggle.checked ? 'fingers' : 'swipe';
-        gestureModeLabel.textContent = gestureModeToggle.checked ? 'Fingers' : 'Swipe';
-        // переключение режима на полпути жеста может оставить "залипшее"
-        // состояние от предыдущего режима - сбрасываем оба набора состояний
-        resetGestureState();
+    gestureMode = gestureModeToggle.checked ? 'palm' : 'swipe';
+    gestureModeLabel.textContent = gestureModeToggle.checked ? 'Palm' : 'Swipe';
+    resetGestureState();
     });
 }
 
@@ -493,49 +491,68 @@ function detectSwipe(landmarks) {
 
 }
 
-// --- fingers mode ---
+// --- palm mode ---
+//
+// An open palm (all 5 fingers extended, thumb included) counts as a
+// gesture; which hand shows it (left/right, as seen on screen) decides
+// the direction. This is far less likely to be triggered accidentally by
+// everyday poses (resting a hand on your face, holding a mug, etc.) than
+// counting extended fingers.
 
-const INDEX_TIP = 8, INDEX_PIP = 6;
-const MIDDLE_TIP = 12, MIDDLE_PIP = 10;
-const RING_TIP = 16, RING_PIP = 14;
-const PINKY_TIP = 20, PINKY_PIP = 18;
+const THUMB_TIP = 4, THUMB_MCP = 2, INDEX_MCP = 5;
 
-const GESTURE_HOLD_MS = 250;       // gesture must be held this long before it counts
-const GESTURE_COOLDOWN_MS = 1000;  // ignore further gestures right after a trigger
+const HANDEDNESS_CONFIDENCE_MIN = 0.8;
 
-let currentGesture = null;     // 'one' | 'two' | null
-let gestureStartTime = null;
-let gestureTriggered = false;
-let lastGestureTriggerTime = 0;
+// MediaPipe's Left/Right classification assumes a mirrored (selfie-style)
+// input image. If the raw stream we send to the model is NOT mirrored
+// (only the on-screen <video> is mirrored via CSS for the user to see),
+// the labels come back swapped relative to what's visually on screen -
+// flip this if testing shows "right hand on screen" triggers "previous"
+// instead of "next" (see console log below to check).
+const HANDEDNESS_MIRRORED = true;
 
-function isFingerExtended(landmarks, tipIdx, pipIdx) {
-    return landmarks[tipIdx].y < landmarks[pipIdx].y;
+function distance(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function getFingerGesture(landmarks) {
-
-    const indexUp = isFingerExtended(landmarks, INDEX_TIP, INDEX_PIP);
-    const middleUp = isFingerExtended(landmarks, MIDDLE_TIP, MIDDLE_PIP);
-    const ringUp = isFingerExtended(landmarks, RING_TIP, RING_PIP);
-    const pinkyUp = isFingerExtended(landmarks, PINKY_TIP, PINKY_PIP);
-
-    if (indexUp && !middleUp && !ringUp && !pinkyUp) return 'one';
-    if (indexUp && middleUp && !ringUp && !pinkyUp) return 'two';
-    return null;
-
+function isThumbExtended(landmarks) {
+    const tipDist = distance(landmarks[THUMB_TIP], landmarks[INDEX_MCP]);
+    const mcpDist = distance(landmarks[THUMB_MCP], landmarks[INDEX_MCP]);
+    return tipDist > mcpDist * 1.3;
 }
 
-function detectFingerGesture(handsLandmarksList) {
+function isPalmOpen(landmarks) {
+    return (
+        isThumbExtended(landmarks) &&
+        isFingerExtended(landmarks, INDEX_TIP, INDEX_PIP) &&
+        isFingerExtended(landmarks, MIDDLE_TIP, MIDDLE_PIP) &&
+        isFingerExtended(landmarks, RING_TIP, RING_PIP) &&
+        isFingerExtended(landmarks, PINKY_TIP, PINKY_PIP)
+    );
+}
 
-    // вторая рука обычно просто лежит в кадре без чёткого жеста -
-    // берём первую руку, которая реально показывает "1" или "2"
+function detectPalmGesture(handsData) {
+
+    const openHands = handsData.filter(h =>
+        h.score >= HANDEDNESS_CONFIDENCE_MIN &&
+        isPalmOpen(h.landmarks) &&
+        !isHandNearFace(h.landmarks)
+    );
+
     let gesture = null;
-    for (const landmarks of handsLandmarksList) {
-        const g = getFingerGesture(landmarks);
-        if (g) {
-            gesture = g;
-            break;
+
+    // ровно одна открытая ладонь - однозначная команда. Ноль или обе
+    // сразу - неоднозначно, игнорируем (например, потягивание двумя руками)
+    if (openHands.length === 1) {
+        let side = openHands[0].label; // 'Left' | 'Right' от MediaPipe
+
+        if (HANDEDNESS_MIRRORED) {
+            side = side === 'Left' ? 'Right' : 'Left';
         }
+
+        console.log('Palm detected - raw label:', openHands[0].label, '-> resolved side:', side);
+
+        gesture = side === 'Right' ? 'right' : 'left';
     }
 
     const now = Date.now();
@@ -555,7 +572,8 @@ function detectFingerGesture(handsLandmarksList) {
         gestureTriggered = true;
         lastGestureTriggerTime = now;
 
-        if (gesture === 'one') {
+        // право на экране = следующий трек, лево = предыдущий
+        if (gesture === 'right') {
             triggerMediaControl('next');
         } else {
             triggerMediaControl('previous');
@@ -605,12 +623,22 @@ hands.setOptions({
 
 hands.onResults((results) => {
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+
         if (gestureMode === 'swipe') {
-            detectSwipe(results.multiHandLandmarks[0]);
+            const activeHands = results.multiHandLandmarks.filter(lm => !isHandNearFace(lm));
+            if (activeHands.length > 0) {
+                detectSwipe(activeHands[0]);
+            }
         } else {
-            detectFingerGesture(results.multiHandLandmarks);
+            const handsData = results.multiHandLandmarks.map((landmarks, i) => ({
+                landmarks,
+                label: results.multiHandedness[i]?.label,
+                score: results.multiHandedness[i]?.score ?? 0
+            }));
+            detectPalmGesture(handsData);
         }
-    } else if (gestureMode === 'fingers') {
+
+    } else if (gestureMode === 'palm') {
         currentGesture = null;
         gestureStartTime = null;
         gestureTriggered = false;
